@@ -44,13 +44,9 @@
 @implementation VideoCapturePlus
 @synthesize inUse, timer;
 
-- (id)initWithWebView:(UIWebView*)theWebView
+- (void)pluginInitialize
 {
-    self = (VideoCapturePlus*)[super initWithWebView:theWebView];
-    if (self) {
-        self.inUse = NO;
-    }
-    return self;
+    self.inUse = NO;
 }
 
 -(void)rotateOverlayIfNeeded:(UIView*) overlayView {
@@ -100,7 +96,8 @@
         float width = CGRectGetWidth(pickerController.view.frame);
         float height = CGRectGetHeight(pickerController.view.frame);
 
-        if (CDV_IsIPad()) {
+        CDV_iOSDevice device = [self getCurrentDevice];
+        if (device.iPad || device.iPhone6Plus) {
             if (UIDeviceOrientationIsLandscape(deviceOrientation)) {
                 [overlayView setCenter:CGPointMake(height/2,width/2)];
             } else {
@@ -146,6 +143,7 @@
     portraitOverlay = [self getImage:[options objectForKey:@"portraitOverlay"]];
     landscapeOverlay = [self getImage:[options objectForKey:@"landscapeOverlay"]];
     NSString* overlayText  = [options objectForKey:@"overlayText"];
+    NSString* fileName  = [options objectForKey:@"fileName"];
     NSString* mediaType = nil;
 
     if ([UIImagePickerController isSourceTypeAvailable:UIImagePickerControllerSourceTypeCamera]) {
@@ -199,7 +197,7 @@
 
 
 
-			if(overlayText != nil) {
+            if(overlayText != nil) {
                 NSUInteger txtLength = overlayText.length;
                 
                 CGRect labelFrame = CGRectMake(10, 40, CGRectGetWidth(pickerController.view.frame) - 20, 40 + (20*(txtLength/25)));
@@ -216,7 +214,7 @@
                 self.overlayBox.text = overlayText;
                 [pickerController.view addSubview:self.overlayBox];
             }
-			
+            
             
             // trying to add a progressbar to the bottom
             /*
@@ -234,6 +232,7 @@
         
         // CDVImagePickerPlus specific property
         pickerController.callbackId = callbackId;
+        self.fileName = fileName;
         [self.viewController presentViewController:pickerController animated:YES completion:nil];
     }
 }
@@ -262,10 +261,28 @@
     //   [self.timerLabel setText:[self formatTime:self.avRecorder.currentTime]];
 //}
 
-- (CDVPluginResult*)processVideo:(NSString*)moviePath forCallbackId:(NSString*)callbackId {
+- (CDVPluginResult*)processVideo:(NSString*)moviePath forCallbackId:(NSString*)callbackId forFileName:(NSString*)fileName {
     // save the movie to photo album (only avail as of iOS 3.1)
-    NSDictionary* fileDict = [self getMediaDictionaryFromPath:moviePath ofType:nil];
+    NSString *fileExtension = @"mov";
+    NSString *library = [[NSSearchPathForDirectoriesInDomains(NSLibraryDirectory, NSUserDomainMask, YES) objectAtIndex:0] stringByAppendingPathComponent:[NSString stringWithFormat:@"files/videos/%@.%@", fileName, fileExtension]];
+    if(!moveFile(moviePath, library)) {
+        NSString *error = @"Video cannot be copied to library";
+        return [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:error ];
+    }
+    
+    NSDictionary* fileDict = [self getMediaDictionaryFromPath:library ofType:nil];
     NSArray* fileArray = [NSArray arrayWithObject:fileDict];
+    
+    // check if the video can be saved to photo album before going further
+    NSURL *inputFileURL = [[NSURL alloc] initWithString:library];
+    if (!UIVideoAtPathIsCompatibleWithSavedPhotosAlbum([inputFileURL path]))
+    {
+        NSString *error = @"Video cannot be saved to photo album";
+        return [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:error ];
+        
+    }
+    
+    UISaveVideoAtPathToSavedPhotosAlbum(library, nil, nil, nil);
     return [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsArray:fileArray];
 }
 
@@ -386,6 +403,7 @@
 - (void)imagePickerController:(UIImagePickerController*)picker didFinishPickingMediaWithInfo:(NSDictionary*)info {
     CDVImagePickerPlus* cameraPicker = (CDVImagePickerPlus*)picker;
     NSString* callbackId = cameraPicker.callbackId;
+    NSString* fileName = self.fileName;
     
     if ([picker respondsToSelector:@selector(presentingViewController)]) {
         [[picker presentingViewController] dismissViewControllerAnimated:YES completion:nil];
@@ -395,8 +413,9 @@
     
     CDVPluginResult* result = nil;
     NSString* moviePath = [[info objectForKey:UIImagePickerControllerMediaURL] path];
+    
     if (moviePath) {
-        result = [self processVideo:moviePath forCallbackId:callbackId];
+        result = [self processVideo:moviePath forCallbackId:callbackId forFileName:fileName];
     }
     if (!result) {
         result = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageToErrorObject:CAPTURE_INTERNAL_ERR];
@@ -418,6 +437,62 @@
     CDVPluginResult* result = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageToErrorObject:CAPTURE_NO_MEDIA_FILES];
     [self.commandDelegate sendPluginResult:result callbackId:callbackId];
     pickerController = nil;
+}
+
+- (CDV_iOSDevice) getCurrentDevice
+{
+    CDV_iOSDevice device;
+    
+    UIScreen* mainScreen = [UIScreen mainScreen];
+    CGFloat mainScreenHeight = mainScreen.bounds.size.height;
+    CGFloat mainScreenWidth = mainScreen.bounds.size.width;
+    
+    int limit = MAX(mainScreenHeight,mainScreenWidth);
+    
+    device.iPad = (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad);
+    device.iPhone = (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPhone);
+    device.retina = ([mainScreen scale] == 2.0);
+    device.iPhone4 = (device.iPhone && limit == 480.0);
+    device.iPhone5 = (device.iPhone && limit == 568.0);
+    // note these below is not a true device detect, for example if you are on an
+    // iPhone 6/6+ but the app is scaled it will prob set iPhone5 as true, but
+    // this is appropriate for detecting the runtime screen environment
+    device.iPhone6 = (device.iPhone && limit == 667.0);
+    device.iPhone6Plus = (device.iPhone && limit == 736.0);
+    
+    return device;
+}
+
+BOOL moveFile(NSString *srcPath, NSString *dstPath)
+{
+    NSLog(@"moving %@ -> %@", srcPath, dstPath);
+    
+    NSFileManager *fm = [NSFileManager defaultManager];
+    if ([fm fileExistsAtPath:dstPath])
+    {
+        // in my usecase this is a hard error, bolt to prevent overwriting
+        return NO;
+    }
+    
+    if ([fm fileExistsAtPath:srcPath])
+    {
+        NSError *error = nil;
+        NSString *destDir = [dstPath stringByDeletingLastPathComponent];
+        [fm createDirectoryAtPath:destDir withIntermediateDirectories:YES attributes:nil error:nil];
+        
+        if ([[NSFileManager defaultManager] copyItemAtPath:srcPath toPath:dstPath error:&error]==NO)
+        {
+            NSLog(@"failure declassing %@", srcPath);
+            return NO;
+        }
+        else
+        {
+            [fm removeItemAtPath:srcPath error:NULL]; // gr8t success
+            return YES;
+        }
+    }
+    
+    return NO;
 }
 
 @end

@@ -38,6 +38,7 @@ public class VideoCapturePlus extends CordovaPlugin {
   private int duration;                           // optional max duration of video recording in seconds
   private boolean highquality;                    // optional setting for controlling the video quality
   private boolean frontcamera;                    // optional setting for starting video capture with the frontcamera
+  private String fileName;                        // optional string for video file name
   private JSONArray results;                      // The array of results to be returned to the user
 
   @Override
@@ -55,6 +56,7 @@ public class VideoCapturePlus extends CordovaPlugin {
       duration = options.optInt("duration", 0);
       highquality = options.optBoolean("highquality", false);
       frontcamera = options.optBoolean("frontcamera", false);
+      fileName = options.optString("fileName", "VideoCapturePlus");
     }
 
     if (action.equals("getFormatData")) {
@@ -112,27 +114,11 @@ public class VideoCapturePlus extends CordovaPlugin {
     return obj;
   }
 
-  private String getTempDirectoryPath() {
-    File cache;
-    if (Environment.getExternalStorageState().equals(Environment.MEDIA_MOUNTED)) {
-      // SD card
-      cache = new File(Environment.getExternalStorageDirectory().getAbsolutePath() + "/Android/data/" + cordova.getActivity().getPackageName() + "/cache/");
-    } else {
-      // internal storage
-      cache = cordova.getActivity().getCacheDir();
-    }
-    // Create the cache directory if it doesn't exist
-    cache.mkdirs();
-    return cache.getAbsolutePath();
-  }
-
   /**
    * Sets up an intent to capture video.  Result handled by onActivityResult()
    */
   private void captureVideo(int duration, boolean highquality, boolean frontcamera) {
     Intent intent = new Intent(android.provider.MediaStore.ACTION_VIDEO_CAPTURE);
-    String videoUri = getVideoContentUriFromFilePath(this.cordova.getActivity(), getTempDirectoryPath());
-    intent.putExtra(MediaStore.EXTRA_OUTPUT, videoUri);
 
     if (highquality) {
       intent.putExtra(MediaStore.EXTRA_VIDEO_QUALITY, 1);
@@ -154,30 +140,6 @@ public class VideoCapturePlus extends CordovaPlugin {
     this.cordova.startActivityForResult(this, intent, CAPTURE_VIDEO);
   }
 
-  public static String getVideoContentUriFromFilePath(Context ctx, String filePath) {
-
-    ContentResolver contentResolver = ctx.getContentResolver();
-    String videoUriStr = null;
-
-    // This returns us content://media/external/videos/media (or something like that)
-    // I pass in "external" because that's the MediaStore's name for the external
-    // storage on my device (the other possibility is "internal")
-    Uri videosUri = MediaStore.Video.Media.getContentUri("external");
-
-    String[] projection = {MediaStore.Video.VideoColumns._ID};
-
-    Cursor cursor = contentResolver.query(videosUri, projection, MediaStore.Video.VideoColumns.DATA + " LIKE ?", new String[]{filePath}, null);
-    long videoId = -1;
-    if (cursor.getCount() > 0) {
-      cursor.moveToFirst();
-      int columnIndex = cursor.getColumnIndex(projection[0]);
-      videoId = cursor.getLong(columnIndex);
-    }
-    cursor.close();
-    if (videoId != -1) videoUriStr = videosUri.toString() + "/" + videoId;
-    return videoUriStr;
-  }
-
   /**
    * Called when the video view exits.
    *
@@ -193,11 +155,6 @@ public class VideoCapturePlus extends CordovaPlugin {
         if (intent != null) {
           // Get the uri of the video clip
           data = intent.getData();
-        }
-
-        if (data == null) {
-          File movie = new File(getTempDirectoryPath(), "VideoCapturePlus.avi");
-          data = Uri.fromFile(movie);
         }
 
         // create a file object from the uri
